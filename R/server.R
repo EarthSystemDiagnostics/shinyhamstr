@@ -22,7 +22,12 @@
 #'
 #' @examples
 server <- function(input, output, session){
+
+  options(shiny.host = "0.0.0.0")
+  options(shiny.port = 9292)
+
   # load a datafile ----------
+  options(shiny.maxRequestSize=300*1024^2)
 
   data <- reactive({
     req(input$upload)
