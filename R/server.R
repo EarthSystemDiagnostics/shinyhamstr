@@ -29,22 +29,20 @@ server <- function(input, output, session){
   # load a datafile ----------
   options(shiny.maxRequestSize=300*1024^2)
 
-  data <- reactive({
-    req(input$upload)
+  values <- reactiveValues(data = NULL)
+
+ observeEvent(input$upload, {
+    #req(input$upload)
 
     ext <- tools::file_ext(input$upload$name)
-    switch(
+    values$data <- reactive(switch(
       ext,
       csv = vroom::vroom(input$upload$datapath, delim = ","),
       tsv = vroom::vroom(input$upload$datapath, delim = "\t"),
       validate("Invalid file; Please upload a .csv or .tsv file")
-    )
+    ))
   })
 
-
-  output$datafile <- renderTable({
-    data()
-  })
 
 
   # load a model -------
@@ -62,20 +60,30 @@ server <- function(input, output, session){
       rdata = readRDS(input$load_hamstr$datapath),
       validate("Invalid file; Please upload an RDS file")
     )
+
+    values$data <- reactive(as.data.frame(r$hamstr_mod$data[c("depth", "obs_age", "obs_err")]))
   })
+
+
+  output$datafile <- renderTable({
+      values$data()
+      })
+
 
 
   # ui elements - data -----------
 
   # select columns to use for depth and age variables
-  output$ui.col.select <- renderUI({
+
+    output$ui.col.select <- renderUI({
+      req(values$data)
     fluidRow(
-      h4("Select columns"),
+      h4("Select age-control data"),
       column(
         12,
-        varSelectInput("depth", "depth:", data(), selected = "depth_cm"),
-        varSelectInput("obs_age", "age:", data(), selected = "age.14C.cal"),
-        varSelectInput("obs_err", "age uncertainty:", data(), selected = "age.14C.cal.se")
+        varSelectInput("depth", "depth:", values$data(), selected = "depth"),
+        varSelectInput("obs_age", "age:", values$data(), selected = "obs_age"),
+        varSelectInput("obs_err", "age uncertainty:", values$data(), selected = "obs_err")
       )
 
     )
@@ -86,8 +94,14 @@ server <- function(input, output, session){
 
   output$ui.adj.pars <- renderUI({
 
-    req(input$depth)
-    df <-  data()
+    req(input$upload)
+
+    df <-  values$data()
+
+    if (all(is.numeric(c(df[[input$obs_age]], df[[input$depth]], df[[input$obs_err]]))) == FALSE){
+      validate("Check that age-control point data are all numeric.")
+    }
+
 
     def_pars <- hamstr::hamstr(
       depth = df[[input$depth]],
@@ -201,7 +215,7 @@ server <- function(input, output, session){
     req(input$model_bioturbation)
 
     req(input$depth)
-    df <-  data()
+    df <-  values$data()
 
     def_pars <- hamstr::hamstr(
       depth = df[[input$depth]],
@@ -226,7 +240,7 @@ server <- function(input, output, session){
           numericInput("L_prior_shape", "L_prior_shape:", value = def_pars$L_prior_shape)
         ),
         fluidRow(column(12, column(12,
-                                   varSelectInput("n_ind", "n_ind:", data(), selected = "n.forams"))
+                                   varSelectInput("n_ind", "n_ind:", values$data(), selected = "n.forams"))
         )
         )
       )))
@@ -240,7 +254,7 @@ server <- function(input, output, session){
     req(input$model_displacement)
 
     req(input$depth)
-    df <-  data()
+    df <-  values$data()
 
     def_pars <- hamstr::hamstr(
       depth = df[[input$depth]],
@@ -277,9 +291,9 @@ server <- function(input, output, session){
                     plotOutput("plot.acc_rates", width = "100%"),
 
                     sliderInput("tau", "Apply running mean:", min = 0,
-                                max = ceiling(2*mod_length),
+                                max = ceiling(mod_length/2),
                                 value = 0,
-                                step = round(mod_length / 10),
+                                step = 10,
                                 round = 3
                                 ),
                     checkboxGroupInput("acc_x", "x axis",
@@ -288,12 +302,15 @@ server <- function(input, output, session){
 
   })
 
-
   # empty hamstr model -------
   empty_model <- reactive({
 
     req(input$depth)
-    df <- data()
+    df <- values$data()
+
+    if (all(is.numeric(c(df[[input$obs_age]], df[[input$depth]], df[[input$obs_err]]))) == FALSE){
+      validate("")
+    }
 
     hamstr::hamstr(
       depth = df[[input$depth]],
@@ -325,13 +342,12 @@ server <- function(input, output, session){
   ## ui start -----
   output$ui.start <- renderUI({
 
-    req(input$upload)
+    req(input$depth)
 
     fluidRow(h3("Run hamstr"),
              fluidRow(column(12, numericInput("iter", "No. sampler iterations", empty_model()$data$iter))),
              fluidRow(column(12, actionButton("start", "Run:"))))
   })
-
 
 
 
@@ -350,7 +366,7 @@ server <- function(input, output, session){
   r <- reactiveValues(progress_mtime = -1)
 
   observeEvent(input$start, {
-    df <- data()
+    df <- values$data()
     nc <- parallel::detectCores()
     if (nc >= 4)
       nchains <- 4
@@ -700,4 +716,151 @@ output$ui.exp.new.depths <- renderUI({
     }
   )
 
+
+
+# 14C calibration components ---------
+
+
+## ui elements - 14C data -----------
+
+# select columns to use for depth and age variables
+output$ui.col.select.14C <- renderUI({
+
+  req(input$upload)
+  fluidRow(
+    #h3("14C Calibration"),
+    h4("Select radiocarbon data"),
+    column(
+      12,
+      varSelectInput("age.14C", "Radiocarbon age:", values$data(), selected = "age.14C"),
+      varSelectInput("age.14C.se", "Radiocarbon age uncertainty:", values$data(), selected = "age.14C.se"),
+      varSelectInput("offset", "Reservoir age:", values$data(), selected = "offset"),
+      varSelectInput("offset.se", "Reservoir age uncertainty:", values$data(), selected = "offset.se")
+    )
+  )
+
+
+})
+
+
+output$ui.14C.pars <- renderUI({
+
+  req(input$age.14C)
+
+  df14C <- values$data()
+
+  if (all(is.numeric(c(df14C[[input$age.14C]], df14C[[input$age.14C.se]],
+                       df14C[[input$offset]], df14C[[input$offset.se]]))) == FALSE){
+    validate("Check that radiocarbon data are all numeric.")
+  }
+
+  fluidRow(
+    h4("Calibration options"),
+    column(
+      12,
+      column(
+        12,
+        selectInput("cal_curve", "Calibration curve:",
+                    choices = c("intcal20", "marine20", "shcal20",
+                                "intcal13", "marine13", "shcal13",
+                                "normal"),
+                    selected = "intcal20")
+      ),
+      column(
+        12,
+        numericInput("dfs", "t-dist df:",
+                     step = 1,
+                     value = 6)
+      )
+    )
+
+  )
+})
+
+## run 14C calibration -------
+
+## ui start calibration -----
+output$ui.start.14C <- renderUI({
+
+  req(input$upload)
+
+  df14C <- values$data()
+
+  if (all(is.numeric(c(df14C[[input$age.14C]], df14C[[input$age.14C.se]],
+                       df14C[[input$offset]], df14C[[input$offset.se]]))) == FALSE){
+    validate("Check that radiocarbon data are all numeric.")
+  }
+
+
+  fluidRow(h3("Calibrate"),
+           fluidRow(column(12, actionButton("start14C", "Calibrate:"))))
+})
+
+
+
+observeEvent(input$start14C, {
+
+  req(input$upload)
+
+  df14C <- values$data()
+
+  if (all(is.numeric(c(df14C[[input$age.14C]], df14C[[input$age.14C.se]],
+                       df14C[[input$offset]], df14C[[input$offset.se]]))) == FALSE){
+    validate("Check that radiocarbon data are all numeric.")
+  }
+
+  cal_dat <- hamstr::calibrate_14C_age(
+    dat = df14C,
+    age.14C = input$age.14C,
+    age.14C.se = input$age.14C.se,
+    cal_curve = input$cal_curve,
+    offset = input$offset,
+    offset.se = input$offset.se,
+    dfs = input$dfs
+  )
+  values$data <-  reactive(cal_dat)
+
+
+
+  })
+
+
+observeEvent(input$upload, {
+  output$datafile.14C <- renderTable({
+    values$data()
+  })
+})
+
+
+# observeEvent(calibrated14C(), {
+#   values$data <- reactive(calibrated14C())
+# })
+
+
+## export calibrated data -------
+
+output$dl.cal_dat <- downloadHandler(
+  filename = function() {
+    paste0("calibrated.14C.tsv")
+  },
+  content = function(file) {
+    vroom::vroom_write(values$data(), file)
+  }
+)
+
+output$ui.download.cal <- renderUI({
+
+  req(input$start14C)
+
+  column(12,
+         fluidRow(
+           hr(),
+           h3("Save:"),
+           downloadButton("dl.cal_dat", "Download calibrated 14C data .tsv")
+         )
+  )
+
+})
+
 }
+
